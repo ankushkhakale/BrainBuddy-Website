@@ -29,11 +29,13 @@ import {
   Trash2,
   Mail,
   Phone,
+  Sparkles,
+  Smile,
+  Play,
 } from "lucide-react"
 import { useAuth } from "@/contexts/auth-context"
 import { createClient } from "@/lib/supabase-client"
 import { FileUpload } from "@/components/file-upload"
-import { AIChat } from "@/components/ai-chat"
 import { QuizPlayerEnhanced } from "@/components/quiz-player-enhanced"
 import { AchievementSystem } from "@/components/achievement-system"
 import { ProgressTracker } from "@/components/progress-tracker"
@@ -42,6 +44,10 @@ import { NotificationSystem } from "@/components/notification-system"
 import { Leaderboard } from "@/components/leaderboard"
 import { EditableProfile } from "@/components/editable-profile"
 import { SidebarTabs } from "@/components/ui/SidebarTabs"
+import { NLPTools } from "@/components/nlp-tools"
+import { AIChatBox } from "@/components/ui/ai-prompt-box"
+import { VideoLearn } from "@/components/video-learn"
+import { AILearn } from "@/components/ai-learn"
 
 interface UserProgress {
   xp_points: number
@@ -69,7 +75,8 @@ export default function DashboardPage() {
   const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<
-    "overview" | "learn" | "practice" | "progress" | "achievements" | "leaderboard" | "chat" | "profile" | "more" | "help" | "faq"
+
+    "overview" | "learn" | "video-learn" | "ai-learn" | "practice" | "progress" | "achievements" | "leaderboard" | "chat" | "profile" | "more" | "help" | "faq" | "nlp-tools"
   >("overview")
   const [moreSubTab, setMoreSubTab] = useState<"help" | "faq">("help")
   const [difficulty, setDifficulty] = useState("medium")
@@ -80,11 +87,23 @@ export default function DashboardPage() {
     newLevel: number
   } | null>(null)
   const supabase = createClient()
+  // Daily Quests & Streak state
+  const [quests, setQuests] = useState<any[]>([])
+  const [streak, setStreak] = useState<number>(0)
+  const [lastCompleted, setLastCompleted] = useState<string | null>(null)
+  const [questLoading, setQuestLoading] = useState(false)
+  const [questError, setQuestError] = useState<string | null>(null)
+  const [completedQuestIds, setCompletedQuestIds] = useState<number[]>([])
 
   const tabItems = [
     { key: "overview", label: "Overview", icon: BarChart3 },
     { key: "learn", label: "Learn", icon: BookOpen },
+    { key: "video-learn", label: "Video Learn", icon: PlayCircle },
+    { key: "ai-learn", label: "AI Learn", icon: Award },
     { key: "practice", label: "Practice", icon: PlayCircle },
+    { key: "nlp-tools", label: "NLP Tools", icon: Sparkles },
+    { key: "practice", label: "Practice", icon: PlayCircle },
+
     { key: "progress", label: "Progress", icon: TrendingUp },
     { key: "achievements", label: "Achievements", icon: Award },
     { key: "leaderboard", label: "Leaderboard", icon: Crown },
@@ -101,7 +120,57 @@ export default function DashboardPage() {
 
     fetchUserData()
     initializeUserInLeaderboard()
+    fetchDailyQuests()
+    fetchStreak()
+    fetchCompletedQuests()
   }, [user, router])
+
+  useEffect(() => {
+    if (!user || quests.length === 0) return;
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const checkAndMarkQuests = async () => {
+      // Fetch user progress for today
+      const { data: progress } = await supabase
+        .from("user_progress")
+        .select("total_quizzes_completed, last_activity_date, total_study_time_minutes")
+        .eq("user_id", user.id)
+        .single();
+
+      for (const quest of quests) {
+        if (!completedQuestIds.includes(quest.id)) {
+          // Complete Quiz Quest
+          if (
+            quest.type === "complete_quiz" &&
+            progress?.last_activity_date === today &&
+            progress?.total_quizzes_completed > 0
+          ) {
+            await fetch("/api/complete-quest", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ quest_id: quest.id }),
+            });
+            setCompletedQuestIds((prev) => [...prev, quest.id]);
+          }
+          // Study Time Quest (e.g., 10 minutes)
+          if (
+            quest.type === "study_time" &&
+            progress?.total_study_time_minutes >= (quest.target_value || 10)
+          ) {
+            await fetch("/api/complete-quest", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ quest_id: quest.id }),
+            });
+            setCompletedQuestIds((prev) => [...prev, quest.id]);
+          }
+        }
+      }
+    };
+
+    checkAndMarkQuests();
+  }, [user, quests, completedQuestIds]);
 
   const initializeUserInLeaderboard = async () => {
     if (!user) return
@@ -251,21 +320,23 @@ export default function DashboardPage() {
     const xpEarned = Math.floor((score / totalQuestions) * 50) // Base XP calculation
 
     // Record quiz completion activity
-    await recordActivity("quiz_completed", xpEarned)
+    await recordActivity("quiz_completed",)
 
     // Create completion notification
     await supabase.from("notifications").insert({
       user_id: user?.id,
       title: "Quiz Completed! 🎉",
-      message: `Great job! You scored ${score}/${totalQuestions} and earned ${xpEarned} XP!`,
+      message: `Great job! You scored ${score}/${totalQuestions}`,
       type: "success",
     })
 
     // Refresh user data to get updated progress
     await fetchUserData()
+
     // Do NOT close the quiz or reset selectedQuiz here. Let the user close it from the review/results UI.
     // setSelectedQuiz(null)
     // setActiveTab("overview")
+
   }
 
   const startQuiz = (quiz: Quiz) => {
@@ -321,6 +392,70 @@ export default function DashboardPage() {
     }
   };
 
+  // Fetch daily quests and streak
+  const fetchDailyQuests = async () => {
+    setQuestLoading(true)
+    setQuestError(null)
+    try {
+      const res = await fetch("/api/daily-quests")
+      const data = await res.json()
+      setQuests(data.quests || [])
+    } catch (e) {
+      setQuestError("completed 5 minutes of study time")
+    } finally {
+      setQuestLoading(false)
+    }
+  }
+
+  const fetchStreak = async () => {
+    try {
+      const res = await fetch("/api/streak")
+      const data = await res.json()
+      setStreak(data.streak || 0)
+      setLastCompleted(data.last_completed_at || null)
+    } catch (e) {
+      setStreak(0)
+      setLastCompleted(null)
+    }
+  }
+
+  const fetchCompletedQuests = async () => {
+    if (!user) return
+    const today = new Date().toISOString().slice(0, 10)
+    const { data, error } = await supabase
+      .from("user_quest_completions")
+      .select("quest_id")
+      .eq("user_id", user.id)
+      .eq("completed_date", today)
+    if (!error && data) {
+      setCompletedQuestIds(data.map((q: any) => q.quest_id))
+    }
+  }
+
+  const handleCompleteQuest = async (questId: number) => {
+    setQuestLoading(true)
+    setQuestError(null)
+    try {
+      const res = await fetch("/api/complete-quest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quest_id: questId }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setCompletedQuestIds((prev) => [...prev, questId])
+        setStreak(data.newStreak || streak)
+        fetchStreak()
+      } else {
+        setQuestError(data.error || "Failed to complete quest.")
+      }
+    } catch (e) {
+      setQuestError("Failed to complete quest.")
+    } finally {
+      setQuestLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -367,6 +502,7 @@ export default function DashboardPage() {
               <div className="w-11 h-11 bg-gradient-to-r from-purple-500 to-pink-500 rounded-2xl flex items-center justify-center shadow-lg">
                 <Brain className="w-6 h-6 text-white" />
               </div>
+
               <div className="flex flex-col min-w-0">
                 <span className="text-xl font-extrabold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent leading-tight truncate">
                   BrainBuddy
@@ -383,6 +519,18 @@ export default function DashboardPage() {
                 <span className="font-bold">{streakDays}</span>
                 <span className="text-xs">day streak</span>
               </div>
+
+              {/* Mood Tracker Button */}
+                  <Button
+                    variant="outline"
+                className="hidden md:flex items-center gap-2 border-blue-400 text-blue-600 hover:bg-blue-50"
+                    onClick={() => router.push("/mood")}
+                title="Open Mood Tracker"
+                  >
+                <Smile className="w-5 h-5" />
+                <span className="hidden md:inline">Mood Tracker</span>
+                  </Button>
+
               {/* Level Badge */}
               <div className="flex items-center bg-gradient-to-r from-purple-500 to-pink-500 rounded-full px-4 py-1 shadow text-white font-bold text-sm gap-1">
                 <Crown className="w-5 h-5" />
@@ -456,9 +604,64 @@ export default function DashboardPage() {
           <div className="container mx-auto px-4 pt-4 pb-8">
             {/* Main Dashboard Tabs */}
             <div className="space-y-6">
+              {/* Daily Quests & Streak Section */}
+              <Card className="mb-6">
+                <CardHeader className="flex flex-row items-center gap-4">
+                  <Flame className="text-orange-500" size={32} />
+                  <div>
+                    <CardTitle>Daily Quests</CardTitle>
+                    <CardDescription>
+                      Complete quests every day to build your streak!
+                    </CardDescription>
+                  </div>
+                  <div className="ml-auto flex flex-col items-end">
+                    <span className="text-lg font-bold flex items-center gap-1">
+                      <Flame className="text-orange-500" size={20} />
+                      Streak: {streak}
+                    </span>
+                    {lastCompleted && (
+                      <span className="text-xs text-muted-foreground">Last completed: {lastCompleted}</span>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {questLoading ? (
+                    <div>Loading quests...</div>
+                  ) : questError ? (
+                    <div className="text-red-500">{questError}</div>
+                  ) : quests.length === 0 ? (
+                    <div>No quests for today. Check back tomorrow!</div>
+                  ) : (
+                    <ul className="space-y-3">
+                      {quests.map((quest) => (
+                        <li key={quest.id} className="flex items-center gap-3">
+                          <span className="flex-1">{quest.description}</span>
+                          <Badge>{quest.reward}</Badge>
+                          {completedQuestIds.includes(quest.id) ? (
+                            <Button variant="default" size="sm" disabled className="flex items-center gap-1">
+                              <CheckCircle className="text-green-500" size={16} /> Completed
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleCompleteQuest(quest.id)}
+                              disabled={questLoading}
+                            >
+                              Mark Complete
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+
               {/* Overview Tab */}
               {activeTab === "overview" && (
                 <div className="space-y-6">
+
         {/* Welcome Section */}
         <div className="mb-6 pt-6 pb-6">
           <div className="text-left space-y-6">
@@ -499,333 +702,362 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      </div>
 
-              {/* Stats Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                {/* Total XP Card */}
-                <Card className="border-0 shadow-xl bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-950 dark:to-pink-950">
-                  <CardContent className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-12 h-12 bg-gradient-to-r from-purple-500 to-pink-500 rounded-xl flex items-center justify-center">
-                        <Zap className="w-6 h-6 text-white" />
-                      </div>
-                      <Badge className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">
-                        Level {currentLevel}
-                      </Badge>
+                  {/* Stats Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    {/* Total XP Card */}
+                    <Card className="border-0 shadow-xl bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-950 dark:to-pink-950">
+                <CardContent className="p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="w-12 h-12 bg-gradient-to-r from-purple-500 to-pink-500 rounded-xl flex items-center justify-center">
+                            <Zap className="w-6 h-6 text-white" />
                     </div>
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-muted-foreground">Total XP</p>
-                      <p className="text-3xl font-bold text-foreground">{currentXP}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {xpNeeded > 0 ? `${xpNeeded} XP to next level` : "Max level reached!"}
-                      </p>
+                          <Badge className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">
+                            Level {currentLevel}
+                          </Badge>
                     </div>
-                  </CardContent>
-                </Card>
-
-                {/* Streak Days Card */}
-                <Card className="border-0 shadow-xl bg-gradient-to-br from-orange-50 to-red-50 dark:from-orange-950 dark:to-red-950">
-                  <CardContent className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-12 h-12 bg-gradient-to-r from-orange-500 to-red-500 rounded-xl flex items-center justify-center">
-                        <Flame className="w-6 h-6 text-white" />
-                      </div>
-                      <Badge className="bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300">
-                        Active
-                      </Badge>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-muted-foreground">Streak Days</p>
-                      <p className="text-3xl font-bold text-foreground">{streakDays}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {streakDays >= 7 ? "Amazing streak! 🔥" : streakDays > 0 ? "Keep it up! 💪" : "Start your streak today!"}
-                      </p>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Quizzes Completed Card */}
-                <Card className="border-0 shadow-xl bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950">
-                  <CardContent className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-12 h-12 bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl flex items-center justify-center">
-                        <CheckCircle className="w-6 h-6 text-white" />
-                      </div>
-                      <Badge className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
-                        Completed
-                      </Badge>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-muted-foreground">Quizzes Completed</p>
-                      <p className="text-3xl font-bold text-foreground">{userProgress?.total_quizzes_completed || 0}</p>
-                      <p className="text-xs text-muted-foreground">Great progress!</p>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Study Time Card */}
-                <Card className="border-0 shadow-xl bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-950 dark:to-cyan-950">
-                  <CardContent className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-xl flex items-center justify-center">
-                        <Clock className="w-6 h-6 text-white" />
-                      </div>
-                      <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
-                        Today
-                      </Badge>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-muted-foreground">Study Time</p>
-                      <p className="text-3xl font-bold text-foreground">{Math.floor((userProgress?.total_study_time_minutes || 0) / 60)}h</p>
-                      <p className="text-xs text-muted-foreground">{(userProgress?.total_study_time_minutes || 0) % 60}m this session</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
-          )}
-
-          {/* Learn Tab */}
-          {activeTab === "learn" && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Upload Section */}
-                <Card className="lg:col-span-2 border-0 shadow-xl">
-                  <CardHeader>
-                    <CardTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-                      Upload Learning Materials
-                    </CardTitle>
-                    <CardDescription>
-                      Upload PDFs, notes, images, or videos to generate personalized learning content
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <FileUpload onFileProcessed={handleFileProcessed} difficulty={difficulty} contentType={contentType} />
-                  </CardContent>
-                </Card>
-
-                {/* Quick Options */}
-                <Card className="border-0 shadow-xl">
-                  <CardHeader>
-                    <CardTitle className="text-xl font-bold">Quick Options</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="space-y-3">
-                      <label className="text-sm font-medium text-gray-700">Difficulty Level</label>
-                      <Select value={difficulty} onValueChange={setDifficulty}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="easy">Easy</SelectItem>
-                          <SelectItem value="medium">Medium</SelectItem>
-                          <SelectItem value="hard">Hard</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-3">
-                      <label className="text-sm font-medium text-gray-700">Content Type</label>
-                      <Select value={contentType} onValueChange={setContentType}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="quiz">Quiz (15+ Questions)</SelectItem>
-                          <SelectItem value="summary">Summary</SelectItem>
-                          <SelectItem value="flowchart">Flowchart</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
-          )}
-
-          {/* Practice Tab */}
-          {activeTab === "practice" && (
-            <div className="space-y-8">
-              <Card className="border-0 shadow-xl">
-                <CardHeader>
-                  <CardTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-                    Your Quizzes
-                  </CardTitle>
-                  <CardDescription>Practice with your generated quizzes</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {quizzes.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {quizzes.map((quiz) => (
-                        <Card
-                          key={quiz.id}
-                          className="border-purple-200 hover:shadow-lg transition-shadow cursor-pointer"
-                          onClick={() => startQuiz(quiz)}
-                        >
-                          <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-2 gap-2">
-                              <div className="flex items-center gap-2 min-w-0 flex-1">
-                                <h4 className="font-semibold text-foreground truncate flex-1">{quiz.title}</h4>
-                                <Badge
-                                  className={`text-xs ${
-                                    quiz.difficulty_level === "easy"
-                                      ? "bg-green-100 text-green-700"
-                                      : quiz.difficulty_level === "medium"
-                                        ? "bg-yellow-100 text-yellow-700"
-                                        : "bg-red-100 text-red-700"
-                                  }`}
-                                >
-                                  {quiz.difficulty_level}
-                                </Badge>
-                              </div>
-                              <button
-                                className="ml-2 p-1 rounded-full hover:bg-red-100 text-red-500 hover:text-red-700 transition flex-shrink-0"
-                                title="Delete Quiz"
-                                onClick={e => { e.stopPropagation(); handleDeleteQuiz(quiz.id); }}
-                              >
-                                <Trash2 className="w-5 h-5" />
-                              </button>
-                            </div>
-                            <p className="text-sm text-muted-foreground mb-3">{quiz.total_questions} questions</p>
-                            <Button className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white text-sm">
-                              <PlayCircle className="w-4 h-4 mr-2" />
-                              Start Quiz
-                            </Button>
-                          </CardContent>
-                        </Card>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-12 text-muted-foreground">
-                      <div className="w-16 h-16 bg-gray-100 rounded-3xl flex items-center justify-center mx-auto mb-4">
-                        <FileText className="w-8 h-8 opacity-50" />
-                      </div>
-                      <p className="text-lg font-medium mb-2">No quizzes yet</p>
-                      <p>Upload some content to generate your first quiz!</p>
-                      <Button
-                        className="mt-4 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
-                        onClick={() => setActiveTab("learn")}
-                      >
-                        Upload Content
-                      </Button>
-                    </div>
-                  )}
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-muted-foreground">Total XP</p>
+                          <p className="text-3xl font-bold text-foreground">{currentXP}</p>
+                          <p className="text-xs text-muted-foreground">
+                      {xpNeeded > 0 ? `${xpNeeded} XP to next level` : "Max level reached!"}
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
-              <div className="mt-8 text-center">
-                <h3 className="text-xl font-semibold mb-2 text-foreground">Daily Challenge</h3>
-                <p className="text-muted-foreground mb-4">Complete today's challenge to earn bonus XP and unlock a surprise!</p>
-                <Button className="bg-gradient-to-r from-yellow-400 to-pink-500 text-white font-bold px-8 py-3 text-lg rounded-full hover:scale-105 transition-transform">
-                  Take the Daily Challenge
-                </Button>
-              </div>
-            </div>
-          )}
 
-          {/* Progress Tab */}
-          {activeTab === "progress" && (
-            <div className="space-y-6">
-              <ProgressTracker />
-            </div>
-          )}
+                    {/* Streak Days Card */}
+                    <Card className="border-0 shadow-xl bg-gradient-to-br from-orange-50 to-red-50 dark:from-orange-950 dark:to-red-950">
+                <CardContent className="p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="w-12 h-12 bg-gradient-to-r from-orange-500 to-red-500 rounded-xl flex items-center justify-center">
+                            <Flame className="w-6 h-6 text-white" />
+                    </div>
 
-          {/* Achievements Tab */}
-          {activeTab === "achievements" && (
-            <div className="space-y-6">
-              <AchievementSystem />
-            </div>
-          )}
+                          <Badge className="bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300">
+                            Active
+                          </Badge>
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-muted-foreground">Streak Days</p>
+                      <p className="text-3xl font-bold text-foreground">{streak}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {streak >= 7 ? "Amazing streak! 🔥" : streak > 0 ? "Keep it up! 💪" : "Start your streak today!"}
+                      </p>
+                    </div>
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-muted-foreground">Streak Days</p>
+                          <p className="text-3xl font-bold text-foreground">{streakDays}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {streakDays >= 7 ? "Amazing streak! 🔥" : streakDays > 0 ? "Keep it up! 💪" : "Start your streak today!"}
+                          </p>
+                        </div>
+                </CardContent>
+              </Card>
 
-          {/* Leaderboard Tab */}
-          {activeTab === "leaderboard" && (
-            <div className="space-y-6">
+                    {/* Quizzes Completed Card */}
+                    <Card className="border-0 shadow-xl bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950">
+                <CardContent className="p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="w-12 h-12 bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl flex items-center justify-center">
+                            <CheckCircle className="w-6 h-6 text-white" />
+                    </div>
+                          <Badge className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                            Completed
+                          </Badge>
+                    </div>
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-muted-foreground">Quizzes Completed</p>
+                          <p className="text-3xl font-bold text-foreground">{userProgress?.total_quizzes_completed || 0}</p>
+                          <p className="text-xs text-muted-foreground">Great progress!</p>
+                  </div>
+                </CardContent>
+              </Card>
+
+                    {/* Study Time Card */}
+                    <Card className="border-0 shadow-xl bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-950 dark:to-cyan-950">
+                <CardContent className="p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="w-12 h-12 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-xl flex items-center justify-center">
+                            <Clock className="w-6 h-6 text-white" />
+                    </div>
+                          <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
+                            Today
+                          </Badge>
+                    </div>
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-muted-foreground">Study Time</p>
+                          <p className="text-3xl font-bold text-foreground">{Math.floor((userProgress?.total_study_time_minutes || 0) / 60)}h</p>
+                          <p className="text-xs text-muted-foreground">{(userProgress?.total_study_time_minutes || 0) % 60}m this session</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+                </div>
+              )}
+
+              {/* Learn Tab */}
+              {activeTab === "learn" && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Upload Section */}
+                    <Card className="lg:col-span-2 border-0 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                          Upload Learning Materials
+                        </CardTitle>
+                        <CardDescription>
+                          Upload PDFs, notes, images, or videos to generate personalized learning content
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <FileUpload onFileProcessed={handleFileProcessed} difficulty={difficulty} contentType={contentType} />
+                      </CardContent>
+                    </Card>
+
+                    {/* Quick Options */}
+                    <Card className="border-0 shadow-xl">
+                      <CardHeader>
+                        <CardTitle className="text-xl font-bold">Quick Options</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="space-y-3">
+                          <label className="text-sm font-medium text-gray-700">Difficulty Level</label>
+                          <Select value={difficulty} onValueChange={setDifficulty}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="easy">Easy</SelectItem>
+                              <SelectItem value="medium">Medium</SelectItem>
+                              <SelectItem value="hard">Hard</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-3">
+                          <label className="text-sm font-medium text-gray-700">Content Type</label>
+                          <Select value={contentType} onValueChange={setContentType}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="quiz">Quiz (15+ Questions)</SelectItem>
+                              <SelectItem value="summary">Summary</SelectItem>
+                              <SelectItem value="flowchart">Flowchart</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              )}
+
+              {/* Video Learn Tab */}
+              {activeTab === "video-learn" && (
+                <div className="space-y-6">
+                  <VideoLearn dashboardTab={activeTab} />
+                </div>
+              )}
+
+              {/* AI Learn Tab */}
+              {activeTab === "ai-learn" && (
+                <div className="space-y-6">
+                  <AILearn />
+                </div>
+              )}
+
+              {/* Practice Tab */}
+              {activeTab === "practice" && (
+                <div className="space-y-8">
+            <Card className="border-0 shadow-xl">
+              <CardHeader>
+                <CardTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
+                  Your Quizzes
+                </CardTitle>
+                <CardDescription>Practice with your generated quizzes</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {quizzes.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {quizzes.map((quiz) => (
+                      <Card
+                        key={quiz.id}
+                        className="border-purple-200 hover:shadow-lg transition-shadow cursor-pointer"
+                        onClick={() => startQuiz(quiz)}
+                      >
+                        <CardContent className="p-4">
+                                <div className="flex items-center justify-between mb-2 gap-2">
+                                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    <h4 className="font-semibold text-foreground truncate flex-1">{quiz.title}</h4>
+                            <Badge
+                              className={`text-xs ${
+                                quiz.difficulty_level === "easy"
+                                  ? "bg-green-100 text-green-700"
+                                  : quiz.difficulty_level === "medium"
+                                    ? "bg-yellow-100 text-yellow-700"
+                                    : "bg-red-100 text-red-700"
+                              }`}
+                            >
+                              {quiz.difficulty_level}
+                            </Badge>
+                                  </div>
+                                  <button
+                                    className="ml-2 p-1 rounded-full hover:bg-red-100 text-red-500 hover:text-red-700 transition flex-shrink-0"
+                                    title="Delete Quiz"
+                                    onClick={e => { e.stopPropagation(); handleDeleteQuiz(quiz.id); }}
+                                  >
+                                    <Trash2 className="w-5 h-5" />
+                                  </button>
+                          </div>
+                          <p className="text-sm text-muted-foreground mb-3">{quiz.total_questions} questions</p>
+                          <Button className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white text-sm">
+                            <PlayCircle className="w-4 h-4 mr-2" />
+                            Start Quiz
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <div className="w-16 h-16 bg-gray-100 rounded-3xl flex items-center justify-center mx-auto mb-4">
+                      <FileText className="w-8 h-8 opacity-50" />
+                    </div>
+                    <p className="text-lg font-medium mb-2">No quizzes yet</p>
+                    <p>Upload some content to generate your first quiz!</p>
+                    <Button
+                      className="mt-4 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+                      onClick={() => setActiveTab("learn")}
+                    >
+                      Upload Content
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+                  <div className="mt-8 text-center">
+                    <h3 className="text-xl font-semibold mb-2 text-foreground">Daily Challenge</h3>
+                    <p className="text-muted-foreground mb-4">Complete today's challenge to earn bonus XP and unlock a surprise!</p>
+                    <Button className="bg-gradient-to-r from-yellow-400 to-pink-500 text-white font-bold px-8 py-3 text-lg rounded-full hover:scale-105 transition-transform">
+                      Take the Daily Challenge
+                    </Button>
+                  </div>
+                  </div>
+              )}
+
+              {/* Progress Tab */}
+              {activeTab === "progress" && (
+                <div className="space-y-6">
+            <ProgressTracker />
+                </div>
+              )}
+
+              {/* Achievements Tab */}
+              {activeTab === "achievements" && (
+                <div className="space-y-6">
+            <AchievementSystem />
+                </div>
+              )}
+
+              {/* Leaderboard Tab */}
+              {activeTab === "leaderboard" && (
+                <div className="space-y-6">
                   <Leaderboard limit={15} showCurrentUser={true} variant="full" />
-            </div>
-          )}
+                </div>
+              )}
 
-          {/* Chat Tab */}
-          {activeTab === "chat" && (
-            <div className="space-y-6">
-              <AIChat />
-            </div>
-          )}
+              {/* Chat Tab */}
+              {activeTab === "chat" && (
+                <div className="space-y-6">
+            <AIChatBox user={user} />
+                </div>
+              )}
 
-          {/* Profile Tab */}
-          {activeTab === "profile" && (
-            <div className="space-y-6">
-              <EditableProfile onProfileUpdate={fetchUserData} />
-            </div>
-          )}
+              {/* Profile Tab */}
+              {activeTab === "profile" && (
+                <div className="space-y-6">
+                  <EditableProfile onProfileUpdate={fetchUserData} />
+                  </div>
+              )}
 
-          {/* More Tab */}
-          {activeTab === "more" && (
-            <div className="space-y-6">
-              <div className="flex gap-4 mb-6">
-                <button
-                  className={`px-6 py-2 rounded-lg font-semibold text-base transition-colors duration-150 ${moreSubTab === "help" ? "bg-purple-100 text-purple-700 shadow" : "bg-transparent text-gray-700 hover:bg-purple-50"}`}
-                  onClick={() => setMoreSubTab("help")}
-                >
-                  Help and Support
-                </button>
-                <button
-                  className={`px-6 py-2 rounded-lg font-semibold text-base transition-colors duration-150 ${moreSubTab === "faq" ? "bg-purple-100 text-purple-700 shadow" : "bg-transparent text-gray-700 hover:bg-purple-50"}`}
-                  onClick={() => setMoreSubTab("faq")}
-                >
-                  FAQ
-                </button>
+              {/* More Tab */}
+              {activeTab === "more" && (
+                <div className="space-y-6">
+                  <div className="flex gap-4 mb-6">
+                    <button
+                      className={`px-6 py-2 rounded-lg font-semibold text-base transition-colors duration-150 ${moreSubTab === "help" ? "bg-purple-100 text-purple-700 shadow" : "bg-transparent text-gray-700 hover:bg-purple-50"}`}
+                      onClick={() => setMoreSubTab("help")}
+                    >
+                      Help and Support
+                    </button>
+                    <button
+                      className={`px-6 py-2 rounded-lg font-semibold text-base transition-colors duration-150 ${moreSubTab === "faq" ? "bg-purple-100 text-purple-700 shadow" : "bg-transparent text-gray-700 hover:bg-purple-50"}`}
+                      onClick={() => setMoreSubTab("faq")}
+                    >
+                      FAQ
+                    </button>
+                      </div>
+                  {moreSubTab === "help" && (
+                    <div className="p-8 rounded-xl shadow text-center space-y-6 bg-white dark:bg-[#181c2f] border border-border dark:border-[#23284a]">
+                      <h2 className="text-2xl font-bold mb-4 text-foreground">Help and Support</h2>
+                      <p className="text-muted-foreground mb-6 text-gray-600 dark:text-gray-400">We're here to help! If you have any questions, issues, or need assistance with BrainBuddy, please reach out to our support team. You can also check our FAQ for quick answers.</p>
+                      <div className="flex flex-col items-center gap-4">
+                        <div className="flex items-center gap-3">
+                          <Phone className="w-5 h-5 text-green-600 dark:text-green-400" />
+                          <span className="font-semibold text-lg text-foreground">Support & Contact:</span>
+                      </div>
+                        <div className="flex flex-col gap-1">
+                          <a href="tel:+917276412788" className="text-blue-700 dark:text-blue-400 hover:underline text-base">+91 72764 12788</a>
+                          <a href="tel:+917588195521" className="text-blue-700 dark:text-blue-400 hover:underline text-base">+91 75881 95521</a>
+                    </div>
+                        <div className="flex items-center gap-3 mt-2">
+                          <Mail className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                          <a href="mailto:neongenesis.devs@gmail.com" className="text-purple-700 dark:text-purple-300 hover:underline text-base font-medium">neongenesis.devs@gmail.com</a>
+                  </div>
+                            </div>
+                    </div>
+                  )}
+                  {moreSubTab === "faq" && (
+                    <div className="p-8 rounded-xl shadow text-left max-w-2xl mx-auto bg-white dark:bg-[#181c2f] border border-border dark:border-[#23284a]">
+                      <h2 className="text-2xl font-bold mb-6 text-center text-foreground">Frequently Asked Questions</h2>
+                      <div className="space-y-6">
+                            <div>
+                          <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">What is BrainBuddy?</h3>
+                          <p className="text-muted-foreground text-gray-600 dark:text-gray-400">BrainBuddy is an AI-powered learning companion designed to make studying fun, interactive, and personalized for students under 15. It helps you learn through quizzes, flashcards, and gamified progress tracking.</p>
+                            </div>
+                        <div>
+                          <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">Is BrainBuddy safe for kids?</h3>
+                          <p className="text-muted-foreground text-gray-600 dark:text-gray-400">Absolutely! BrainBuddy is built with safety and privacy in mind. All content is age-appropriate, and your data is protected with industry-standard security measures.</p>
+                          </div>
+                        <div>
+                          <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">How do I generate quizzes or study materials?</h3>
+                          <p className="text-muted-foreground text-gray-600 dark:text-gray-400">Simply upload your notes, PDFs, images, or videos in the Learn section. BrainBuddy will automatically create personalized quizzes, summaries, and flashcards for you to practice.</p>
+                            </div>
+                        <div>
+                          <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">Can I track my progress?</h3>
+                          <p className="text-muted-foreground text-gray-600 dark:text-gray-400">Yes! The dashboard shows your XP, level, streaks, and completed quizzes. You can see your growth and celebrate achievements as you learn.</p>
+                          </div>
+                        <div>
+                          <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">How do I get help or support?</h3>
+                          <p className="text-muted-foreground text-gray-600 dark:text-gray-400">If you need assistance, visit the Help and Support section under More, or contact us at <a href="mailto:neongenesis.devs@gmail.com" className="text-purple-700 dark:text-purple-300 hover:underline">neongenesis.devs@gmail.com</a> or call our support numbers.</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* NLP Tools Tab */}
+              {activeTab === "nlp-tools" && (
+                <div className="space-y-6">
+                  <NLPTools />
+                      </div>
+              )}
+                    </div>
+                  </div>
               </div>
-              {moreSubTab === "help" && (
-                <div className="p-8 rounded-xl shadow text-center space-y-6 bg-white dark:bg-[#181c2f] border border-border dark:border-[#23284a]">
-                  <h2 className="text-2xl font-bold mb-4 text-foreground">Help and Support</h2>
-                  <p className="text-muted-foreground mb-6 text-gray-600 dark:text-gray-400">We're here to help! If you have any questions, issues, or need assistance with BrainBuddy, please reach out to our support team. You can also check our FAQ for quick answers.</p>
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="flex items-center gap-3">
-                      <Phone className="w-5 h-5 text-green-600 dark:text-green-400" />
-                      <span className="font-semibold text-lg text-foreground">Support & Contact:</span>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <a href="tel:+917276412788" className="text-blue-700 dark:text-blue-400 hover:underline text-base">+91 72764 12788</a>
-                      <a href="tel:+917588195521" className="text-blue-700 dark:text-blue-400 hover:underline text-base">+91 75881 95521</a>
-                    </div>
-                    <div className="flex items-center gap-3 mt-2">
-                      <Mail className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                      <a href="mailto:neongenesis.devs@gmail.com" className="text-purple-700 dark:text-purple-300 hover:underline text-base font-medium">neongenesis.devs@gmail.com</a>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {moreSubTab === "faq" && (
-                <div className="p-8 rounded-xl shadow text-left max-w-2xl mx-auto bg-white dark:bg-[#181c2f] border border-border dark:border-[#23284a]">
-                  <h2 className="text-2xl font-bold mb-6 text-center text-foreground">Frequently Asked Questions</h2>
-                  <div className="space-y-6">
-                    <div>
-                      <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">What is BrainBuddy?</h3>
-                      <p className="text-muted-foreground text-gray-600 dark:text-gray-400">BrainBuddy is an AI-powered learning companion designed to make studying fun, interactive, and personalized for students under 15. It helps you learn through quizzes, flashcards, and gamified progress tracking.</p>
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">Is BrainBuddy safe for kids?</h3>
-                      <p className="text-muted-foreground text-gray-600 dark:text-gray-400">Absolutely! BrainBuddy is built with safety and privacy in mind. All content is age-appropriate, and your data is protected with industry-standard security measures.</p>
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">How do I generate quizzes or study materials?</h3>
-                      <p className="text-muted-foreground text-gray-600 dark:text-gray-400">Simply upload your notes, PDFs, images, or videos in the Learn section. BrainBuddy will automatically create personalized quizzes, summaries, and flashcards for you to practice.</p>
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">Can I track my progress?</h3>
-                      <p className="text-muted-foreground text-gray-600 dark:text-gray-400">Yes! The dashboard shows your XP, level, streaks, and completed quizzes. You can see your growth and celebrate achievements as you learn.</p>
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-lg mb-1 text-purple-700 dark:text-purple-300">How do I get help or support?</h3>
-                      <p className="text-muted-foreground text-gray-600 dark:text-gray-400">If you need assistance, visit the Help and Support section under More, or contact us at <a href="mailto:neongenesis.devs@gmail.com" className="text-purple-700 dark:text-purple-300 hover:underline">neongenesis.devs@gmail.com</a> or call our support numbers.</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   )
