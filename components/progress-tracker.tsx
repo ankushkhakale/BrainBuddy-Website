@@ -193,7 +193,7 @@ export function ProgressTracker() {
       case 10:
         return 4500
       default:
-        return 4500 + (level - 10) * 1000
+        return 50 * level * (level - 1)
     }
   }
 
