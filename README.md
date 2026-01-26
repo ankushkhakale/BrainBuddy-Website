@@ -200,5 +200,4 @@ If you encounter any issues:
 4. Vercel deploys the latest version from this repository
 
 
-hello making 
 **Made with ❤️ for the future of education**
